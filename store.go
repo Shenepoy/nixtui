@@ -167,7 +167,8 @@ func PathSizes(paths []string, closure bool, store string) (map[string]SizeInfo,
 		if err != nil {
 			return out, fmt.Errorf("nix path-info: %s", firstLines(strings.TrimSpace(stderr.String()), 3))
 		}
-		var m map[string]struct {
+		// Paths the store doesn't have come back as null; leave them out.
+		var m map[string]*struct {
 			NarSize      int64 `json:"narSize"`
 			ClosureSize  int64 `json:"closureSize"`
 			DownloadSize int64 `json:"downloadSize"`
@@ -176,7 +177,9 @@ func PathSizes(paths []string, closure bool, store string) (map[string]SizeInfo,
 			return out, err
 		}
 		for p, v := range m {
-			out[p] = SizeInfo{v.NarSize, v.ClosureSize, v.DownloadSize}
+			if v != nil {
+				out[p] = SizeInfo{v.NarSize, v.ClosureSize, v.DownloadSize}
+			}
 		}
 	}
 	return out, nil
@@ -394,6 +397,35 @@ type RemoteInfo struct {
 	Nar      int64
 	Closure  int64
 	Download int64
+	Local    bool // sizes come from the local store, not the binary cache
+	NewPaths int  // store paths you'd have to fetch
+}
+
+// remoteClosure lists every path in a package's closure as the binary cache
+// serves it (NAR size and compressed download size per path).
+func remoteClosure(path string) (map[string]SizeInfo, error) {
+	cmd := exec.Command("nix", "path-info", "-r", "--json", "--json-format", "1",
+		"--store", "https://cache.nixos.org", path)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	b, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("%s", firstLines(strings.TrimSpace(stderr.String()), 3))
+	}
+	var m map[string]*struct {
+		NarSize      int64 `json:"narSize"`
+		DownloadSize int64 `json:"downloadSize"`
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	out := map[string]SizeInfo{}
+	for p, v := range m {
+		if v != nil {
+			out[p] = SizeInfo{Nar: v.NarSize, Download: v.DownloadSize}
+		}
+	}
+	return out, nil
 }
 
 // QueryRemote reports the size of a package as served by cache.nixos.org.
@@ -413,22 +445,41 @@ func QueryRemote(cfg Config, attr string) (*RemoteInfo, error) {
 	if _, err := os.Stat(r.Path); err == nil {
 		info.InStore = true
 	}
-	sizes, err := PathSizes([]string{r.Path}, true, "https://cache.nixos.org")
-	if err != nil {
-		return info, fmt.Errorf("not in the binary cache (would be built from source)")
+	closure, err := remoteClosure(r.Path)
+	s, cached := closure[r.Path]
+	if err != nil || !cached {
+		// Not served by cache.nixos.org (unfree or uncached): if you already
+		// have it, report the local size; otherwise it would be built here.
+		if info.InStore {
+			if local, lerr := PathSizes([]string{r.Path}, true, ""); lerr == nil {
+				if l, ok := local[r.Path]; ok {
+					info.Nar, info.Closure, info.Local = l.Nar, l.Closure, true
+					return info, nil
+				}
+			}
+		}
+		return info, fmt.Errorf("%s: not in the binary cache (unfree or uncached; built locally or fetched from its vendor)", attr)
 	}
-	s := sizes[r.Path]
-	info.Nar, info.Closure, info.Download = s.Nar, s.Closure, s.Download
+	info.Nar = s.Nar
+	for p, v := range closure {
+		info.Closure += v.Nar
+		if _, err := os.Stat(p); err != nil { // not on this machine yet
+			info.Download += v.Download
+			info.NewPaths++
+		}
+	}
 	return info, nil
 }
 
 func (r *RemoteInfo) String() string {
 	s := fmt.Sprintf("size %s · with dependencies %s", humanBytes(r.Nar), humanBytes(r.Closure))
-	if r.Download > 0 {
-		s += " · download " + humanBytes(r.Download)
-	}
-	if r.InStore {
-		s += " · already in store"
+	switch {
+	case r.Local:
+		s += " · local store (not in the binary cache)"
+	case r.NewPaths == 0:
+		s += " · already in store, nothing to download"
+	default:
+		s += fmt.Sprintf(" · download %s (%d new paths)", humanBytes(r.Download), r.NewPaths)
 	}
 	return s
 }
