@@ -1,0 +1,30 @@
+{
+  description = "nixtui - TUI to search nixpkgs and add, edit and apply packages in a NixOS flake";
+
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+
+  outputs = { self, nixpkgs }:
+    let
+      systems = [ "x86_64-linux" "aarch64-linux" ];
+      forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+    in
+    {
+      packages = forAll (pkgs: {
+        default = pkgs.buildGoModule {
+          pname = "nixtui";
+          version = "0.1.0";
+          src = ./.;
+          vendorHash = "sha256-quDVgVQ7t7pkNoxsXTm5k8E9xMOZNGfzIy+9Zo0ifT4=";
+          env.CGO_ENABLED = 0;
+          meta = {
+            description = "TUI to search nixpkgs and add, edit and apply packages in a NixOS flake";
+            mainProgram = "nixtui";
+          };
+        };
+      });
+
+      devShells = forAll (pkgs: {
+        default = pkgs.mkShell { packages = [ pkgs.go pkgs.gopls ]; };
+      });
+    };
+}
