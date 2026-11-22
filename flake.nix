@@ -15,7 +15,7 @@
           pname = "nixtui";
           version = appVersion;
           src = ./.;
-          vendorHash = "sha256-quDVgVQ7t7pkNoxsXTm5k8E9xMOZNGfzIy+9Zo0ifT4=";
+          vendorHash = "sha256-t7BjNtbpSMlmiJvQ1LbYPjqGjKnChjwn72QHdbRue4w=";
           env.CGO_ENABLED = 0;
           ldflags = [ "-s" "-w" "-X main.version=${appVersion}" ];
           nativeBuildInputs = [ pkgs.makeWrapper ];

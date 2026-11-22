@@ -24,6 +24,7 @@ Usage:
   nixtui info <attr>                  size of a package before installing it (binary cache)
   nixtui fmt [--check] [files...]     format .nix files with the bundled nixfmt
   nixtui apply                        sync to the live flake and nixos-rebuild switch
+  nixtui update [--check]             check for a newer release and update this binary
   nixtui --version
 
 Flags:
@@ -32,6 +33,7 @@ Flags:
   --host NAME     nixosConfigurations name     (env NIXTUI_HOST, default nixos)
   --file PATH     package module               (default <repo>/modules/packages.nix)
   --channel NAME  index channel                (default: read from flake.nix)
+  --no-update-check   never look for new releases (env NIXTUI_NO_UPDATE_CHECK=1)
 `
 
 func main() {
@@ -44,9 +46,13 @@ func main() {
 	fs.StringVar(&cfg.PkgFile, "file", "", "")
 	fs.StringVar(&cfg.Channel, "channel", "", "")
 	showVersion := fs.Bool("version", false, "")
+	noUpdate := fs.Bool("no-update-check", false, "")
 	_ = fs.Parse(os.Args[1:])
+	if *noUpdate {
+		_ = os.Setenv("NIXTUI_NO_UPDATE_CHECK", "1")
+	}
 	if *showVersion {
-		fmt.Println("nixtui", version)
+		printVersion()
 		return
 	}
 	cfg.finish()
@@ -78,7 +84,9 @@ func main() {
 	case "apply":
 		err = cliApply(cfg)
 	case "version":
-		fmt.Println("nixtui", version)
+		printVersion()
+	case "update":
+		err = cliUpdate(args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
@@ -319,4 +327,13 @@ func cliFmt(cfg Config, args []string) error {
 		fmt.Println("all files already formatted")
 	}
 	return nil
+}
+
+// printVersion prints the version and, from the cache only (no network), a
+// note on stderr when a newer release is known.
+func printVersion() {
+	fmt.Println("nixtui", version)
+	if latest, ok := UpdateAvailable(false); ok {
+		fmt.Fprintf(os.Stderr, "update available: %s (run: nixtui update)\n", latest)
+	}
 }

@@ -15,7 +15,6 @@ permissions:
   contents: read
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CGO_ENABLED: "0"
 
 jobs:
@@ -25,10 +24,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -46,10 +45,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -71,8 +70,25 @@ jobs:
           "$RUNNER_TEMP/bin/nixtui" --version
           kill "$server"
 
+      - name: Update check and self-update end-to-end (local mirror)
+        run: |
+          mkdir -p "$RUNNER_TEMP/old" "$RUNNER_TEMP/srv"
+          # an "old" binary and a newer release served from a local mirror
+          go build -ldflags "-X main.version=26.11.0" -o "$RUNNER_TEMP/old/nixtui" .
+          go build -ldflags "-X main.version=26.12.0" -o "$RUNNER_TEMP/srv/nixtui-linux-x86_64" .
+          (cd "$RUNNER_TEMP/srv" && sha256sum nixtui-linux-x86_64 > sha256sums.txt && printf '{"tag_name":"v26.12.0"}' > latest.json)
+          python3 -m http.server 8766 --directory "$RUNNER_TEMP/srv" >/dev/null 2>&1 &
+          server=$!
+          sleep 1
+          export NIXTUI_UPDATE_URL=http://127.0.0.1:8766/latest.json NIXTUI_BASE_URL=http://127.0.0.1:8766 XDG_CACHE_HOME="$RUNNER_TEMP/cache"
+          "$RUNNER_TEMP/old/nixtui" update --check | grep -q "26.12.0 is available"
+          "$RUNNER_TEMP/old/nixtui" update
+          test "$("$RUNNER_TEMP/old/nixtui" --version)" = "nixtui 26.12.0"
+          "$RUNNER_TEMP/old/nixtui" update | grep -q "up to date"
+          kill "$server"
+
       - name: Upload binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nixtui-binaries
           path: |
@@ -87,10 +103,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v31
+        uses: cachix/install-nix-action@v32
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes

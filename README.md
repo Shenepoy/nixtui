@@ -29,6 +29,8 @@
   <a href="#the-store-tab">Store tab</a> ·
   <a href="#how-it-edits-your-config">How it edits</a> ·
   <a href="#develop">Develop</a>
+  <br/>
+  <a href="README.ar.md">العربية</a>
 </p>
 
 <p align="center">
@@ -91,6 +93,38 @@ Versions are calendar versions like Lamha: `YY.0M.MICRO` (the first November
 The standalone binaries expect `nix`, `git` and (for **apply**) `sudo` on
 `PATH`. For the formatter they use a `nixfmt` on `PATH`; the Nix package ships
 its own.
+
+---
+
+## Updates
+
+nixtui tells you when a newer release exists. Once a day it asks GitHub for the
+latest release tag (a plain unauthenticated request that carries nothing but a
+generic User-Agent) and caches the answer. When there is something newer, the
+TUI header shows:
+
+```text
+↑ update 26.12.0 available · run: nixtui update
+```
+
+`nixtui --version` prints the same note on stderr, from the cache only, so it
+never waits on the network.
+
+```bash
+nixtui update --check     # is there a newer release?
+nixtui update             # download it, verify its SHA-256, replace this binary
+```
+
+If your copy came from Nix (`nix profile` or your flake), `nixtui update` doesn't
+touch it; it tells you to run `nix profile upgrade nixtui` or
+`nix flake update nixtui` instead.
+
+| Setting | Effect |
+|---|---|
+| `--no-update-check` or `NIXTUI_NO_UPDATE_CHECK=1` | Never look for releases. |
+| `NIXTUI_UPDATE_URL`, `NIXTUI_BASE_URL` | Point the check and the download at a mirror. |
+
+Development builds (`nixtui --version` says `dev`) never check.
 
 ---
 
@@ -159,13 +193,14 @@ nixtui store                            sizes, copies and stale versions
 nixtui info firefox                     size before installing
 nixtui fmt [--check] [files…]           format .nix files
 nixtui apply                            sync to the live flake and switch
+nixtui update [--check]                 look for a newer release and update
 nixtui --version
 ```
 
 **Flags** (or environment): `--repo` / `NIXTUI_REPO` (default `~/nixos-config`),
 `--live` (default `/etc/nixos`), `--host` / `NIXTUI_HOST` (default `nixos`),
 `--file` (default `<repo>/modules/packages.nix`), `--channel` (read from your
-`flake.nix` by default).
+`flake.nix` by default), `--no-update-check`.
 
 ### Keys
 

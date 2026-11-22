@@ -64,6 +64,8 @@ type cmdMsg struct {
 	err   error
 }
 
+type updateMsg struct{ latest string }
+
 type storeMsg struct {
 	rep *StoreReport
 	err error
@@ -145,6 +147,8 @@ type model struct {
 
 	info map[string]string // attr -> size line from the binary cache
 
+	update string // newer release version, when one is known
+
 	busy  string
 	flash string
 	bad   bool
@@ -187,7 +191,15 @@ func newModel(cfg Config) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, m.spin.Tick, loadIndexCmd(m.cfg.Channel), m.refreshChangesCmd())
+	return tea.Batch(textinput.Blink, m.spin.Tick, loadIndexCmd(m.cfg.Channel), m.refreshChangesCmd(), checkUpdateCmd())
+}
+
+// checkUpdateCmd looks for a newer release in the background (cached daily).
+func checkUpdateCmd() tea.Cmd {
+	return func() tea.Msg {
+		latest, _ := UpdateAvailable(true)
+		return updateMsg{latest}
+	}
 }
 
 func loadIndexCmd(channel string) tea.Cmd {
@@ -307,6 +319,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.vp.SetContent(m.colorDiff(m.changesTxt))
 		m.vp.GotoTop()
+		return m, nil
+
+	case updateMsg:
+		m.update = msg.latest
 		return m, nil
 
 	case storeMsg:
@@ -932,10 +948,16 @@ func (m model) viewTabs() string {
 		right = m.spin.View() + " loading index…"
 	} else if m.storeBusy {
 		right = m.spin.View() + " scanning store…"
+	} else if m.update != "" {
+		right = "↑ update " + m.update + " available · run: nixtui update"
 	}
 	left := strings.Join(parts, "")
 	gap := max(1, m.w-lipgloss.Width(left)-lipgloss.Width(right))
-	return left + strings.Repeat(" ", gap) + sDim.Render(right)
+	style := sDim
+	if m.update != "" && !m.loading && !m.storeBusy {
+		style = sWarn
+	}
+	return left + strings.Repeat(" ", gap) + style.Render(truncate(right, max(0, m.w-lipgloss.Width(left)-1)))
 }
 
 func (m model) viewStatus() string {
