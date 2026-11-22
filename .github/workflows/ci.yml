@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CGO_ENABLED: "0"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet, test, gofmt
+        run: make check
+
+      - name: Lint install script
+        run: shellcheck install.sh
+
+  binaries:
+    name: Binaries
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build x86_64 and aarch64
+        run: make dist
+
+      - name: Smoke-test the x86_64 binary
+        run: |
+          ./dist/nixtui-linux-x86_64 --version
+          ./dist/nixtui-linux-x86_64 help | head -n 3
+
+      - name: Installer end-to-end (local mirror)
+        run: |
+          python3 -m http.server 8765 --directory dist >/dev/null 2>&1 &
+          server=$!
+          sleep 1
+          NIXTUI_BASE_URL=http://127.0.0.1:8765 NIXTUI_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+          "$RUNNER_TEMP/bin/nixtui" --version
+          kill "$server"
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: nixtui-binaries
+          path: |
+            dist/nixtui-linux-*
+            dist/sha256sums.txt
+          if-no-files-found: error
+
+  nix:
+    name: Nix build
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build the package (runs the tests, bundles nixfmt)
+        run: nix build .#default --print-build-logs
+
+      - name: Smoke-test
+        run: |
+          ./result/bin/nixtui --version
+          printf '{ a=1; }' > "$RUNNER_TEMP/x.nix"
+          ./result/bin/nixtui fmt "$RUNNER_TEMP/x.nix"

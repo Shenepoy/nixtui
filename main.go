@@ -8,6 +8,9 @@ import (
 	"strings"
 )
 
+// version is set at build time: -ldflags "-X main.version=26.11.0".
+var version = "dev"
+
 const usage = `nixtui - search nixpkgs, add packages to your NixOS flake, edit it, apply it.
 
 Usage:
@@ -21,6 +24,7 @@ Usage:
   nixtui info <attr>                  size of a package before installing it (binary cache)
   nixtui fmt [--check] [files...]     format .nix files with the bundled nixfmt
   nixtui apply                        sync to the live flake and nixos-rebuild switch
+  nixtui --version
 
 Flags:
   --repo DIR      flake working copy to edit   (env NIXTUI_REPO, default ~/nixos-config)
@@ -39,7 +43,12 @@ func main() {
 	fs.StringVar(&cfg.Host, "host", cfg.Host, "")
 	fs.StringVar(&cfg.PkgFile, "file", "", "")
 	fs.StringVar(&cfg.Channel, "channel", "", "")
+	showVersion := fs.Bool("version", false, "")
 	_ = fs.Parse(os.Args[1:])
+	if *showVersion {
+		fmt.Println("nixtui", version)
+		return
+	}
 	cfg.finish()
 
 	args := fs.Args()
@@ -68,6 +77,8 @@ func main() {
 		err = cliFmt(cfg, args[1:])
 	case "apply":
 		err = cliApply(cfg)
+	case "version":
+		fmt.Println("nixtui", version)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:

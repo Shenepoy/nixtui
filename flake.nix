@@ -6,16 +6,18 @@
   outputs = { self, nixpkgs }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
+      appVersion = nixpkgs.lib.removeSuffix "\n" (builtins.readFile ./VERSION);
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
       packages = forAll (pkgs: {
         default = pkgs.buildGoModule {
           pname = "nixtui";
-          version = "0.1.0";
+          version = appVersion;
           src = ./.;
           vendorHash = "sha256-quDVgVQ7t7pkNoxsXTm5k8E9xMOZNGfzIy+9Zo0ifT4=";
           env.CGO_ENABLED = 0;
+          ldflags = [ "-s" "-w" "-X main.version=${appVersion}" ];
           nativeBuildInputs = [ pkgs.makeWrapper ];
           # Bundle the formatter; --suffix lets a nixfmt already on PATH win.
           postInstall = ''

@@ -30,23 +30,25 @@ const (
 var tabNames = []string{"Search", "Installed", "Files", "Changes", "Store"}
 
 var (
-	cAccent = lipgloss.Color("#89b4fa")
-	cDim    = lipgloss.Color("#6c7086")
-	cGood   = lipgloss.Color("#a6e3a1")
-	cBad    = lipgloss.Color("#f38ba8")
-	cWarn   = lipgloss.Color("#f9e2af")
+	// Brand palette: teal for structure, green for selection and success,
+	// orange for keys, warnings and the cursor.
+	cTeal   = lipgloss.Color("#2DD4BF")
+	cGreen  = lipgloss.Color("#22C55E")
+	cOrange = lipgloss.Color("#F97316")
+	cDim    = lipgloss.Color("#6F8F8A")
+	cBad    = lipgloss.Color("#F87171")
 
-	sTabOn   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#1e1e2e")).Background(cAccent).Padding(0, 1)
+	sTabOn   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#08171A")).Background(cTeal).Padding(0, 1)
 	sTabOff  = lipgloss.NewStyle().Foreground(cDim).Padding(0, 1)
 	sDim     = lipgloss.NewStyle().Foreground(cDim)
-	sGood    = lipgloss.NewStyle().Foreground(cGood)
+	sGood    = lipgloss.NewStyle().Foreground(cGreen)
 	sBad     = lipgloss.NewStyle().Foreground(cBad)
-	sWarn    = lipgloss.NewStyle().Foreground(cWarn)
-	sSel     = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
+	sWarn    = lipgloss.NewStyle().Foreground(cOrange)
+	sSel     = lipgloss.NewStyle().Bold(true).Foreground(cGreen)
 	sTitle   = lipgloss.NewStyle().Bold(true)
-	sKey     = lipgloss.NewStyle().Foreground(cAccent)
-	sHunk    = lipgloss.NewStyle().Foreground(lipgloss.Color("#74c7ec"))
-	sNameCol = lipgloss.NewStyle().Foreground(lipgloss.Color("#cdd6f4"))
+	sKey     = lipgloss.NewStyle().Foreground(cOrange)
+	sHunk    = lipgloss.NewStyle().Foreground(cTeal)
+	sNameCol = lipgloss.NewStyle().Foreground(lipgloss.Color("#E2F3F0"))
 )
 
 // ---- messages ---------------------------------------------------------
@@ -157,7 +159,7 @@ func runTUI(cfg Config) error {
 func newModel(cfg Config) model {
 	in := textinput.New()
 	in.Placeholder = "search nixpkgs (e.g. ripgrep, \"video editor\")"
-	in.Prompt = "🔍 "
+	in.Prompt = "› "
 	in.Focus()
 	in.CharLimit = 120
 
@@ -841,6 +843,19 @@ func (m model) moveCursor(cur, off *int, delta, n, h int) {
 	}
 }
 
+// tildePath shortens a path under $HOME to ~/...
+func tildePath(p string) string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if p == home {
+			return "~"
+		}
+		if strings.HasPrefix(p, home+string(filepath.Separator)) {
+			return "~" + p[len(home):]
+		}
+	}
+	return p
+}
+
 func truncate(s string, w int) string {
 	if w <= 0 {
 		return ""
@@ -963,7 +978,7 @@ func (m model) viewHints() string {
 				hs = []string{k("↑↓", "select"), k("s", "sort: "+sortLabels[m.storeSort]), k("enter", "details"), k("r", "rescan")}
 			}
 		default:
-			hs = []string{k("b", "dry build"), k("c", "commit"), k("F", "format all"), k("u", "flake update"), k("R", "rollback"), k("r", "refresh")}
+			hs = []string{k("b", "dry build"), k("c", "commit"), k("F", "format"), k("u", "update"), k("R", "rollback"), k("r", "refresh")}
 		}
 		hs = append(hs, k("tab", "next"), k("ctrl+a", "apply"))
 		if m.tab != tabSearch {
@@ -1083,7 +1098,7 @@ func (m model) viewInstalled() string {
 
 func (m model) viewFiles() string {
 	var b strings.Builder
-	b.WriteString(sDim.Render(fmt.Sprintf("%d files in %s", len(m.files), m.cfg.Repo)) + "\n")
+	b.WriteString(sDim.Render(fmt.Sprintf("%d files in %s", len(m.files), tildePath(m.cfg.Repo))) + "\n")
 	h := m.bodyHeight() - 1
 	end := min(len(m.files), m.fileOff+h)
 	for i := m.fileOff; i < end; i++ {
@@ -1098,7 +1113,7 @@ func (m model) viewFiles() string {
 }
 
 func (m model) viewChanges() string {
-	head := sDim.Render("git changes in " + m.cfg.Repo + "  (scroll with ↑↓ / pgup / pgdn)")
+	head := sDim.Render(truncate("changes in "+tildePath(m.cfg.Repo)+" · ↑↓ pgup pgdn scroll", m.w))
 	return head + "\n" + m.vp.View()
 }
 

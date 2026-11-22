@@ -1,4 +1,4 @@
-module github.com/Zyzto/nixtui
+module github.com/Shenepoy/nixtui
 
 go 1.26.10
 
