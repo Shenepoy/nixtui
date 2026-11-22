@@ -174,3 +174,36 @@ func TestParseIndexStreaming(t *testing.T) {
 		t.Fatalf("unexpected: %+v", pk[0])
 	}
 }
+
+func TestFormattedLayout(t *testing.T) {
+	// testdata/packages.formatted.nix is testdata/packages.nix run through nixfmt
+	// (one package per line); both layouts must yield the same entries.
+	count := func(path string) (int, *PkgFile) {
+		f, err := LoadPkgFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, c := range f.Cats {
+			n += len(c.Items)
+		}
+		return n, f
+	}
+	a, _ := count("testdata/packages.nix")
+	b, f := count("testdata/packages.formatted.nix")
+	if a != b || a == 0 {
+		t.Fatalf("entries differ: compact=%d formatted=%d", a, b)
+	}
+	if err := f.Add("desktopApps", "obsidian"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Remove("wget"); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := f.Find("obsidian"); c == nil {
+		t.Fatal("obsidian missing")
+	}
+	if c, _ := f.Find("curl"); c == nil {
+		t.Fatal("curl lost")
+	}
+}

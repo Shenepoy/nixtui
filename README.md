@@ -16,6 +16,16 @@ config in one keypress, edit any file in the repo, and apply with
 - **Files** tab and built-in editor for the whole flake repo, with a `nix`
   syntax check on save.
 - **Changes** tab: git diff, dry build, commit, `nix flake update`, rollback.
+- **Store** tab: size of every package in your config (alone and with its
+  dependencies), how many copies and versions of it sit in the Nix store, how
+  much of that is stale (no longer used by the running system), and what keeps
+  an old copy alive (generations, profiles, `result` links). The totals line
+  shows the whole store, the running system and the generation count.
+- **Size before you install**: `ctrl+g` on a search result asks cache.nixos.org
+  for its size, closure size and download size.
+- **Formatter bundled**: `nixfmt` ships inside the Nix package. Format the open
+  buffer (`ctrl+f`), a file (`f` in Files), or the whole repo (`F` in Changes).
+  nixtui's own edits keep nixfmt's layout, so the two never fight.
 - **Apply** from anywhere with `ctrl+a`: syncs the working copy to `/etc/nixos`
   and runs `nixos-rebuild switch --flake` (sudo prompts in your terminal).
 
@@ -28,6 +38,9 @@ nixtui add ripgrep -c cliAndCore    # one line: add to a list
 nixtui add ripgrep -c cliAndCore --apply   # ...and rebuild
 nixtui remove ripgrep
 nixtui list
+nixtui store                        # package sizes, copies and versions in the store
+nixtui info firefox                 # size before installing (binary cache)
+nixtui fmt [--check] [files...]     # format .nix files
 nixtui apply
 ```
 
@@ -61,8 +74,11 @@ Parenthesised entries (overrides, `.override { ... }`) are shown as
 | `enter` (Search) | add selected package |
 | `x` (Installed) | remove entry |
 | `e` / `enter` | open in editor |
-| `ctrl+s` / `esc` (editor) | save / close |
-| `b` `c` `u` `R` `r` (Changes) | dry build, commit, flake update, rollback, refresh |
+| `ctrl+s` / `ctrl+f` / `esc` (editor) | save / format / close |
+| `ctrl+g` (Search) | size of the selected package from the binary cache |
+| `f` (Files) | format the selected file |
+| `b` `c` `F` `u` `R` `r` (Changes) | dry build, commit, format all, flake update, rollback, refresh |
+| `s` `enter` `r` (Store) | change sort, show every copy and its GC roots, rescan |
 | `ctrl+a` | apply (rebuild) |
 
 ## Build

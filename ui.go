@@ -24,9 +24,10 @@ const (
 	tabInstalled
 	tabFiles
 	tabChanges
+	tabStore
 )
 
-var tabNames = []string{"Search", "Installed", "Files", "Changes"}
+var tabNames = []string{"Search", "Installed", "Files", "Changes", "Store"}
 
 var (
 	cAccent = lipgloss.Color("#89b4fa")
@@ -59,6 +60,22 @@ type cmdMsg struct {
 	title string
 	out   string
 	err   error
+}
+
+type storeMsg struct {
+	rep *StoreReport
+	err error
+}
+
+type rootsMsg struct {
+	path  string
+	roots []string
+}
+
+type infoMsg struct {
+	attr string
+	text string
+	err  error
 }
 
 type execMsg struct {
@@ -114,6 +131,18 @@ type model struct {
 	committing  bool
 	commitInput textinput.Model
 
+	storeRep     *StoreReport
+	storeBusy    bool
+	storeDirty   bool
+	storeCur     int
+	storeOff     int
+	storeSort    int
+	storeDetail  bool
+	storeRoots   map[string][]string
+	storeScanned []string
+
+	info map[string]string // attr -> size line from the binary cache
+
 	busy  string
 	flash string
 	bad   bool
@@ -148,6 +177,7 @@ func newModel(cfg Config) model {
 	m := model{
 		cfg: cfg, input: in, commitInput: ci, spin: sp, editor: ta,
 		loading: true, vp: viewport.New(80, 20),
+		storeRoots: map[string][]string{}, info: map[string]string{}, storeDirty: true,
 	}
 	m.reloadPkgFile()
 	m.reloadFiles()
@@ -188,6 +218,7 @@ func (m *model) reloadPkgFile() {
 	if m.instCur >= len(m.rows) {
 		m.instCur = max(0, len(m.rows)-1)
 	}
+	m.storeDirty = true
 }
 
 func (m *model) reloadFiles() {
@@ -266,9 +297,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.say(msg.title + " ok")
 			}
 			m.tab = tabChanges
+			if msg.title == "format" {
+				m.reloadPkgFile()
+				m.vp.SetContent(m.colorDiff(m.changesTxt))
+				return m, m.refreshChangesCmd()
+			}
 		}
 		m.vp.SetContent(m.colorDiff(m.changesTxt))
 		m.vp.GotoTop()
+		return m, nil
+
+	case storeMsg:
+		m.storeBusy = false
+		if msg.err != nil {
+			m.fail("store scan failed: " + msg.err.Error())
+			return m, nil
+		}
+		m.storeRep = msg.rep
+		m.storeCur, m.storeOff = 0, 0
+		m.say(fmt.Sprintf("store scanned: %d packages", len(msg.rep.Pkgs)))
+		return m, nil
+
+	case rootsMsg:
+		m.storeRoots[msg.path] = msg.roots
+		return m, nil
+
+	case infoMsg:
+		m.busy = ""
+		if msg.err != nil {
+			m.info[msg.attr] = "size: " + msg.err.Error()
+			m.fail(msg.attr + ": " + msg.err.Error())
+		} else {
+			m.info[msg.attr] = msg.text
+			m.say(msg.attr + ": " + msg.text)
+		}
 		return m, nil
 
 	case execMsg:
@@ -315,11 +377,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Global keys (not while typing a search).
 	switch key {
 	case "tab":
-		m.setTab((m.tab + 1) % 4)
-		return m, nil
+		cmd := m.setTab((m.tab + 1) % tab(len(tabNames)))
+		return m, cmd
 	case "shift+tab":
-		m.setTab((m.tab + 3) % 4)
-		return m, nil
+		cmd := m.setTab((m.tab + tab(len(tabNames)) - 1) % tab(len(tabNames)))
+		return m, cmd
 	case "ctrl+a":
 		return m.startApply()
 	}
@@ -331,12 +393,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.keyInstalled(msg)
 	case tabFiles:
 		return m.keyFiles(msg)
+	case tabStore:
+		return m.keyStore(msg)
 	default:
 		return m.keyChanges(msg)
 	}
 }
 
-func (m *model) setTab(t tab) {
+func (m *model) setTab(t tab) tea.Cmd {
 	m.tab = t
 	if t == tabSearch {
 		m.input.Focus()
@@ -346,6 +410,34 @@ func (m *model) setTab(t tab) {
 	if t == tabFiles {
 		m.reloadFiles()
 	}
+	if t == tabStore && (m.storeRep == nil || m.storeDirty) && !m.storeBusy {
+		return m.startStoreScan()
+	}
+	return nil
+}
+
+func (m *model) startStoreScan() tea.Cmd {
+	attrs := m.installedAttrs()
+	m.storeBusy, m.storeDirty = true, false
+	m.storeScanned = attrs
+	cfg := m.cfg
+	return func() tea.Msg {
+		rep, err := ScanStore(cfg, attrs)
+		return storeMsg{rep, err}
+	}
+}
+
+func (m model) installedAttrs() []string {
+	seen := map[string]bool{}
+	var attrs []string
+	for _, r := range m.rows {
+		a := strings.TrimPrefix(r.item.Text, "pkgs.")
+		if !r.item.Opaque && !seen[a] {
+			seen[a] = true
+			attrs = append(attrs, a)
+		}
+	}
+	return attrs
 }
 
 func (m model) startApply() (tea.Model, tea.Cmd) {
@@ -380,6 +472,20 @@ func (m model) keySearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.beginInstall(m.results[m.cur].Attr)
+	case "ctrl+g":
+		if len(m.results) == 0 {
+			return m, nil
+		}
+		attr := m.results[m.cur].Attr
+		m.busy = "checking size of " + attr
+		cfg := m.cfg
+		return m, func() tea.Msg {
+			info, err := QueryRemote(cfg, attr)
+			if err != nil {
+				return infoMsg{attr: attr, err: err}
+			}
+			return infoMsg{attr: attr, text: info.String()}
+		}
 	}
 	var cmd tea.Cmd
 	before := m.input.Value()
@@ -507,6 +613,26 @@ func (m model) keyFiles(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openEditor(filepath.Join(m.cfg.Repo, m.files[m.fileCur]), 0)
+	case "f":
+		if len(m.files) == 0 {
+			return m, nil
+		}
+		path := filepath.Join(m.cfg.Repo, m.files[m.fileCur])
+		if !strings.HasSuffix(path, ".nix") {
+			m.fail("the formatter only handles .nix files")
+			return m, nil
+		}
+		changed, err := FormatFile(path)
+		switch {
+		case err != nil:
+			m.fail("format failed: " + strings.ReplaceAll(firstLines(err.Error(), 2), "\n", " "))
+		case changed:
+			m.say("formatted " + m.files[m.fileCur])
+			m.reloadPkgFile()
+			return m, m.refreshChangesCmd()
+		default:
+			m.say(m.files[m.fileCur] + " already formatted")
+		}
 	}
 	return m, nil
 }
@@ -543,6 +669,8 @@ func (m model) keyEditor(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+s":
 		return m.saveEditor()
+	case "ctrl+f":
+		return m.formatEditor()
 	case "esc":
 		if m.editor.Value() != m.editOrig && !m.discardOK {
 			m.discardOK = true
@@ -558,6 +686,35 @@ func (m model) keyEditor(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.editor, cmd = m.editor.Update(msg)
 	return m, cmd
+}
+
+func (m model) formatEditor() (tea.Model, tea.Cmd) {
+	if !strings.HasSuffix(m.editPath, ".nix") {
+		m.fail("the formatter only handles .nix files")
+		return m, nil
+	}
+	out, err := FormatNix(m.editor.Value())
+	if err != nil {
+		m.fail("format failed: " + strings.ReplaceAll(firstLines(err.Error(), 2), "\n", " "))
+		return m, nil
+	}
+	if out == m.editor.Value() {
+		m.say("already formatted")
+		return m, nil
+	}
+	line := m.editor.Line()
+	m.editor.SetValue(out)
+	total := strings.Count(out, "\n") + 2
+	for guard := 0; m.editor.Line() > 0 && guard < total; guard++ {
+		m.editor.CursorUp()
+	}
+	for guard := 0; m.editor.Line() < line && guard < total; guard++ {
+		m.editor.CursorDown()
+	}
+	m.editor.SetCursor(0)
+	m.editor, _ = m.editor.Update(nil)
+	m.say("formatted with nixfmt — ctrl+s to save")
+	return m, nil
 }
 
 func (m model) saveEditor() (tea.Model, tea.Cmd) {
@@ -598,6 +755,17 @@ func (m model) keyChanges(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "r":
 		return m, m.refreshChangesCmd()
+	case "F":
+		cfg := m.cfg
+		m.busy = "formatting"
+		return m, func() tea.Msg {
+			changed, err := FormatRepo(cfg.Repo, false)
+			out := "formatted " + fmt.Sprint(len(changed)) + " file(s):\n" + strings.Join(changed, "\n")
+			if err != nil {
+				out = err.Error()
+			}
+			return cmdMsg{"format", out, err}
+		}
 	case "b":
 		m.busy = "dry build"
 		cfg := m.cfg
@@ -615,7 +783,8 @@ func (m model) keyChanges(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "c":
 		m.committing = true
 		m.commitInput.SetValue("")
-		return m, m.commitInput.Focus()
+		focus := m.commitInput.Focus()
+		return m, focus
 	case "R":
 		cmd := exec.Command("bash", "-c", m.cfg.RollbackScript()+
 			"\nstatus=$?\necho\nread -rp 'Press enter to return to nixtui… ' _\nexit $status")
@@ -723,6 +892,8 @@ func (m model) View() string {
 			body = m.viewInstalled()
 		case tabFiles:
 			body = m.viewFiles()
+		case tabStore:
+			body = m.viewStore()
 		default:
 			body = m.viewChanges()
 		}
@@ -744,6 +915,8 @@ func (m model) viewTabs() string {
 	right := ""
 	if m.loading {
 		right = m.spin.View() + " loading index…"
+	} else if m.storeBusy {
+		right = m.spin.View() + " scanning store…"
 	}
 	left := strings.Join(parts, "")
 	gap := max(1, m.w-lipgloss.Width(left)-lipgloss.Width(right))
@@ -770,7 +943,7 @@ func (m model) viewHints() string {
 	var hs []string
 	switch {
 	case m.editing:
-		hs = []string{k("ctrl+s", "save"), k("esc", "close")}
+		hs = []string{k("ctrl+s", "save"), k("ctrl+f", "format"), k("esc", "close")}
 	case m.picking:
 		hs = []string{k("↑↓", "choose list"), k("enter", "add"), k("esc", "cancel")}
 	case m.committing:
@@ -778,13 +951,19 @@ func (m model) viewHints() string {
 	default:
 		switch m.tab {
 		case tabSearch:
-			hs = []string{k("↑↓", "select"), k("enter", "add to config"), k("esc", "clear")}
+			hs = []string{k("↑↓", "select"), k("enter", "add to config"), k("ctrl+g", "size"), k("esc", "clear")}
 		case tabInstalled:
 			hs = []string{k("↑↓", "select"), k("x", "remove"), k("e", "edit file")}
 		case tabFiles:
-			hs = []string{k("↑↓", "select"), k("enter", "edit")}
+			hs = []string{k("↑↓", "select"), k("enter", "edit"), k("f", "format")}
+		case tabStore:
+			if m.storeDetail {
+				hs = []string{k("esc", "back")}
+			} else {
+				hs = []string{k("↑↓", "select"), k("s", "sort: "+sortLabels[m.storeSort]), k("enter", "details"), k("r", "rescan")}
+			}
 		default:
-			hs = []string{k("b", "dry build"), k("c", "commit"), k("u", "flake update"), k("R", "rollback"), k("r", "refresh")}
+			hs = []string{k("b", "dry build"), k("c", "commit"), k("F", "format all"), k("u", "flake update"), k("R", "rollback"), k("r", "refresh")}
 		}
 		hs = append(hs, k("tab", "next"), k("ctrl+a", "apply"))
 		if m.tab != tabSearch {
@@ -843,7 +1022,12 @@ func (m model) viewSearch() string {
 	}
 	b.WriteString(truncate(title, m.w) + "\n")
 	b.WriteString(truncate(p.Desc, m.w) + "\n")
-	b.WriteString(sDim.Render(truncate(p.Home, m.w)))
+	b.WriteString(sDim.Render(truncate(p.Home, m.w)) + "\n")
+	if t, ok := m.info[p.Attr]; ok {
+		b.WriteString(sWarn.Render(truncate(t, m.w)))
+	} else {
+		b.WriteString(sDim.Render("ctrl+g: look up size (binary cache)"))
+	}
 	return b.String()
 }
 
@@ -924,4 +1108,182 @@ func (m model) viewEditor() string {
 		dirty = sWarn.Render(" ● modified")
 	}
 	return sTitle.Render(m.relPath(m.editPath)) + dirty + "\n" + m.editor.View()
+}
+
+// ---- store tab ---------------------------------------------------------
+
+func (m model) storeListHeight() int { return max(3, m.bodyHeight()-7) }
+
+func (m model) sortedStore() []PkgStore {
+	if m.storeRep == nil {
+		return nil
+	}
+	p := append([]PkgStore(nil), m.storeRep.Pkgs...)
+	sortStore(p, m.storeSort)
+	return p
+}
+
+func (m model) keyStore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.storeDetail {
+		switch msg.String() {
+		case "esc", "enter", "q", "backspace":
+			m.storeDetail = false
+		}
+		return m, nil
+	}
+	pkgs := m.sortedStore()
+	n, lh := len(pkgs), m.storeListHeight()
+	switch msg.String() {
+	case "q":
+		return m, tea.Quit
+	case "up", "k":
+		m.moveCursor(&m.storeCur, &m.storeOff, -1, n, lh)
+	case "down", "j":
+		m.moveCursor(&m.storeCur, &m.storeOff, 1, n, lh)
+	case "pgup":
+		m.moveCursor(&m.storeCur, &m.storeOff, -10, n, lh)
+	case "pgdown":
+		m.moveCursor(&m.storeCur, &m.storeOff, 10, n, lh)
+	case "s":
+		m.storeSort = (m.storeSort + 1) % sortModes
+		m.storeCur, m.storeOff = 0, 0
+	case "r":
+		if !m.storeBusy {
+			cmd := m.startStoreScan()
+			return m, cmd
+		}
+	case "enter", "d":
+		if n == 0 {
+			return m, nil
+		}
+		m.storeDetail = true
+		var cmds []tea.Cmd
+		for _, c := range pkgs[m.storeCur].Copies {
+			if _, done := m.storeRoots[c.Path]; !c.InSystem && !done {
+				path := c.Path
+				cmds = append(cmds, func() tea.Msg { return rootsMsg{path, Roots(path)} })
+			}
+		}
+		return m, tea.Batch(cmds...)
+	}
+	return m, nil
+}
+
+func (m model) viewStore() string {
+	if m.storeDetail {
+		return m.viewStoreDetail()
+	}
+	if m.storeRep == nil {
+		if m.storeBusy {
+			return sDim.Render("Scanning the Nix store: resolving each package and measuring closures (about 10 s)…")
+		}
+		return sDim.Render("Press r to scan the store.")
+	}
+	rep := m.storeRep
+	pkgs := m.sortedStore()
+	var b strings.Builder
+	b.WriteString(truncate(fmt.Sprintf("%s  %s   %s  %s   %s",
+		sTitle.Render("store"), fmt.Sprintf("%d paths · %s", rep.StorePaths, humanBytes(rep.StoreBytes)),
+		sTitle.Render("this system"), fmt.Sprintf("%d paths · %s", rep.SysPaths, humanBytes(rep.SysBytes)),
+		fmt.Sprintf("%d generations", rep.Generations)), m.w) + "\n")
+	b.WriteString(sDim.Render(truncate(fmt.Sprintf("%d packages · by %s · SIZE alone, CLOSURE with deps, STALE = old copies the system no longer uses",
+		len(pkgs), sortLabels[m.storeSort]), m.w)) + "\n")
+	namew := min(36, max(12, m.w-2-10-10-6-5-10-5))
+	b.WriteString(sDim.Render(fmt.Sprintf("  %-*s %10s %10s %6s %5s %10s", namew, "PACKAGE", "SIZE", "CLOSURE", "COPIES", "VERS", "STALE")) + "\n")
+
+	lh := m.storeListHeight()
+	end := min(len(pkgs), m.storeOff+lh)
+	for i := m.storeOff; i < end; i++ {
+		p := pkgs[i]
+		var line string
+		if p.Err != "" || !p.Present {
+			note := p.Err
+			if note == "" {
+				note = "not in the store yet — apply to install"
+			}
+			line = fmt.Sprintf("  %-*s %s", namew, truncate(p.Attr, namew), sDim.Render(note))
+		} else {
+			stale := humanBytes(p.Stale)
+			if p.Stale > 0 {
+				stale = sBad.Render(fmt.Sprintf("%10s", stale))
+			} else {
+				stale = sDim.Render(fmt.Sprintf("%10s", stale))
+			}
+			line = fmt.Sprintf("  %-*s %10s %10s %6d %5d %s", namew, truncate(p.Attr, namew),
+				humanBytes(p.Nar), humanBytes(p.Closure), len(p.Copies), p.Versions, stale)
+		}
+		if i == m.storeCur {
+			line = sSel.Render("▌") + line[1:]
+		}
+		b.WriteString(truncate(line, m.w+40) + "\n")
+	}
+	for i := end - m.storeOff; i < lh; i++ {
+		b.WriteString("\n")
+	}
+
+	b.WriteString(sDim.Render(strings.Repeat("─", m.w)) + "\n")
+	if len(pkgs) == 0 {
+		return b.String()
+	}
+	p := pkgs[min(m.storeCur, len(pkgs)-1)]
+	b.WriteString(truncate(sTitle.Render(p.Attr)+sDim.Render("  "+p.Name+"  "+p.Path), m.w) + "\n")
+	var cs []string
+	for i, c := range p.Copies {
+		if i == 4 {
+			cs = append(cs, sDim.Render(fmt.Sprintf("+%d more", len(p.Copies)-4)))
+			break
+		}
+		tag := sGood.Render("current")
+		if !c.InSystem {
+			tag = sBad.Render("old")
+		}
+		cs = append(cs, fmt.Sprintf("%s %s %s", c.Version, tag, humanBytes(c.Nar)))
+	}
+	if len(cs) == 0 {
+		cs = []string{sDim.Render("no copies in the store")}
+	}
+	b.WriteString(truncate(strings.Join(cs, sDim.Render("  ·  ")), m.w) + "\n")
+	b.WriteString(sDim.Render("enter: all copies and what keeps old ones alive"))
+	return b.String()
+}
+
+func (m model) viewStoreDetail() string {
+	pkgs := m.sortedStore()
+	if len(pkgs) == 0 {
+		return ""
+	}
+	p := pkgs[min(m.storeCur, len(pkgs)-1)]
+	var b strings.Builder
+	b.WriteString(sTitle.Render(p.Attr) + sDim.Render("  "+p.Name) + "\n")
+	b.WriteString(sDim.Render(truncate(p.Path, m.w)) + "\n")
+	if p.Present {
+		b.WriteString(fmt.Sprintf("size %s · with dependencies %s\n", humanBytes(p.Nar), humanBytes(p.Closure)))
+	}
+	b.WriteString(fmt.Sprintf("%d copies across %d version(s) · %s total · %s stale\n\n",
+		len(p.Copies), p.Versions, humanBytes(p.Total), humanBytes(p.Stale)))
+	for _, c := range p.Copies {
+		tag := sGood.Render("✓ current")
+		if !c.InSystem {
+			tag = sBad.Render("✗ old    ")
+		}
+		b.WriteString(truncate(fmt.Sprintf("%s  %-14s %10s  %s", tag, c.Version, humanBytes(c.Nar), sDim.Render(c.Path)), m.w) + "\n")
+		if c.InSystem {
+			continue
+		}
+		roots, done := m.storeRoots[c.Path]
+		switch {
+		case !done:
+			b.WriteString(sDim.Render("      checking what keeps it…") + "\n")
+		case len(roots) == 0:
+			b.WriteString(sDim.Render("      no GC root — a garbage collection will free it") + "\n")
+		default:
+			for _, r := range roots[:min(len(roots), 4)] {
+				b.WriteString(sDim.Render(truncate("      kept by "+r, m.w)) + "\n")
+			}
+			if len(roots) > 4 {
+				b.WriteString(sDim.Render(fmt.Sprintf("      …and %d more", len(roots)-4)) + "\n")
+			}
+		}
+	}
+	return b.String()
 }

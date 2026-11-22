@@ -16,6 +16,11 @@
           src = ./.;
           vendorHash = "sha256-quDVgVQ7t7pkNoxsXTm5k8E9xMOZNGfzIy+9Zo0ifT4=";
           env.CGO_ENABLED = 0;
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          # Bundle the formatter; --suffix lets a nixfmt already on PATH win.
+          postInstall = ''
+            wrapProgram $out/bin/nixtui --suffix PATH : ${pkgs.lib.makeBinPath [ pkgs.nixfmt ]}
+          '';
           meta = {
             description = "TUI to search nixpkgs and add, edit and apply packages in a NixOS flake";
             mainProgram = "nixtui";
